@@ -143,65 +143,6 @@ class Attention(nn.Module):
         return x
 
 
-class Attention_Average(nn.Module):
-    fused_attn: Final[bool]
-
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int = 8,
-        qkv_bias: bool = False,
-        qk_norm: bool = False,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        norm_layer: nn.Module = nn.LayerNorm,
-    ) -> None:
-        super().__init__()
-        assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim**-0.5
-        self.fused_attn = use_fused_attn()
-
-        self.qkv = nn.Linear(
-            dim, self.head_dim * 3, bias=qkv_bias
-        )  # replace dim with self.head_dim
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(self.head_dim, dim)  # replace dim with self.head_dim
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
-        qkv = (
-            self.qkv(x).reshape(B, N, 3, 1, self.head_dim).permute(2, 0, 3, 1, 4)
-        )  # replace num_heads with 1
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
-
-        if self.fused_attn:
-            x = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                dropout_p=self.attn_drop.p if self.training else 0.0,
-            )
-        else:
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
-
-        x = x.transpose(1, 2).reshape(
-            B, N, self.head_dim
-        )  # replace C with self.head_dim
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
 class LayerScale(nn.Module):
     def __init__(
         self,
@@ -267,7 +208,7 @@ class Block(nn.Module):
         return x
 
 
-class Block_Average(Block):
+class Block_Generic(Block):
     def __init__(
         self,
         dim: int,
@@ -282,6 +223,7 @@ class Block_Average(Block):
         act_layer: nn.Module = nn.GELU,
         norm_layer: nn.Module = nn.LayerNorm,
         mlp_layer: nn.Module = Mlp,
+        attention_class: nn.Module = Attention,
     ) -> None:
         super().__init__(
             dim,
@@ -297,7 +239,7 @@ class Block_Average(Block):
             norm_layer=norm_layer,
             mlp_layer=mlp_layer,
         )
-        self.attn = Attention_Average(
+        self.attn = attention_class(
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -1066,265 +1008,6 @@ class VisionTransformer(nn.Module):
         x = self.forward_features(x)
         x = self.forward_head(x)
         return x
-
-
-class VisionTransformer_Average(VisionTransformer):
-    def __init__(
-        self,
-        img_size: Union[int, Tuple[int, int]] = 224,
-        patch_size: Union[int, Tuple[int, int]] = 16,
-        in_chans: int = 3,
-        num_classes: int = 1000,
-        global_pool: Literal["", "avg", "avgmax", "max", "token", "map"] = "token",
-        embed_dim: int = 768,
-        depth: int = 12,
-        num_heads: int = 12,
-        mlp_ratio: float = 4.0,
-        qkv_bias: bool = True,
-        qk_norm: bool = False,
-        init_values: Optional[float] = None,
-        class_token: bool = True,
-        pos_embed: str = "learn",
-        no_embed_class: bool = False,
-        reg_tokens: int = 0,
-        pre_norm: bool = False,
-        final_norm: bool = True,
-        fc_norm: Optional[bool] = None,
-        dynamic_img_size: bool = False,
-        dynamic_img_pad: bool = False,
-        drop_rate: float = 0.0,
-        pos_drop_rate: float = 0.0,
-        patch_drop_rate: float = 0.0,
-        proj_drop_rate: float = 0.0,
-        attn_drop_rate: float = 0.0,
-        drop_path_rate: float = 0.0,
-        weight_init: Literal["skip", "jax", "jax_nlhb", "moco", ""] = "",
-        fix_init: bool = False,
-        embed_layer: Callable = PatchEmbed,
-        norm_layer: Optional[LayerType] = None,
-        act_layer: Optional[LayerType] = None,
-        mlp_layer: Type[nn.Module] = Mlp,
-    ) -> None:
-        super().__init__(
-            img_size=img_size,
-            patch_size=patch_size,
-            in_chans=in_chans,
-            num_classes=num_classes,
-            global_pool=global_pool,
-            embed_dim=embed_dim,
-            depth=depth,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            qkv_bias=qkv_bias,
-            qk_norm=qk_norm,
-            init_values=init_values,
-            class_token=class_token,
-            pos_embed=pos_embed,
-            no_embed_class=no_embed_class,
-            reg_tokens=reg_tokens,
-            pre_norm=pre_norm,
-            final_norm=final_norm,
-            fc_norm=fc_norm,
-            dynamic_img_size=dynamic_img_size,
-            dynamic_img_pad=dynamic_img_pad,
-            drop_rate=drop_rate,
-            pos_drop_rate=pos_drop_rate,
-            patch_drop_rate=patch_drop_rate,
-            proj_drop_rate=proj_drop_rate,
-            attn_drop_rate=attn_drop_rate,
-            drop_path_rate=drop_path_rate,
-            weight_init=weight_init,
-            fix_init=fix_init,
-            embed_layer=embed_layer,
-            norm_layer=norm_layer,
-            act_layer=act_layer,
-            block_fn=Block_Average,
-            mlp_layer=mlp_layer,
-        )
-
-    def load_state_dict(
-        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ):
-        r"""Copy parameters and buffers from :attr:`state_dict` into this module and its descendants.
-
-        If :attr:`strict` is ``True``, then
-        the keys of :attr:`state_dict` must exactly match the keys returned
-        by this module's :meth:`~torch.nn.Module.state_dict` function.
-
-        .. warning::
-            If :attr:`assign` is ``True`` the optimizer must be created after
-            the call to :attr:`load_state_dict` unless
-            :func:`~torch.__future__.get_swap_module_params_on_conversion` is ``True``.
-
-        Args:
-            state_dict (dict): a dict containing parameters and
-                persistent buffers.
-            strict (bool, optional): whether to strictly enforce that the keys
-                in :attr:`state_dict` match the keys returned by this module's
-                :meth:`~torch.nn.Module.state_dict` function. Default: ``True``
-            assign (bool, optional): When ``False``, the properties of the tensors
-                in the current module are preserved while when ``True``, the
-                properties of the Tensors in the state dict are preserved. The only
-                exception is the ``requires_grad`` field of :class:`~torch.nn.Parameter`s
-                for which the value from the module is preserved.
-                Default: ``False``
-
-        Returns:
-            ``NamedTuple`` with ``missing_keys`` and ``unexpected_keys`` fields:
-                * **missing_keys** is a list of str containing any keys that are expected
-                    by this module but missing from the provided ``state_dict``.
-                * **unexpected_keys** is a list of str containing the keys that are not
-                    expected by this module but present in the provided ``state_dict``.
-
-        Note:
-            If a parameter or buffer is registered as ``None`` and its corresponding key
-            exists in :attr:`state_dict`, :meth:`load_state_dict` will raise a
-            ``RuntimeError``.
-        """
-        if not isinstance(state_dict, Mapping):
-            raise TypeError(
-                f"Expected state_dict to be dict-like, got {type(state_dict)}."
-            )
-
-        missing_keys: List[str] = []
-        unexpected_keys: List[str] = []
-        error_msgs: List[str] = []
-
-        # copy state_dict so _load_from_state_dict can modify it
-        metadata = getattr(state_dict, "_metadata", None)
-        state_dict = OrderedDict(state_dict)
-        if metadata is not None:
-            # mypy isn't aware that "_metadata" exists in state_dict
-            state_dict._metadata = metadata  # type: ignore[attr-defined]
-
-        def load(module, local_state_dict, prefix="", name="", parent=None):
-            local_metadata = {} if metadata is None else metadata.get(prefix[:-1], {})
-            if assign:
-                local_metadata["assign_to_params_buffers"] = assign
-            if isinstance(module, nn.Linear) and name in ["qkv", "proj"] and parent is not None:
-                if isinstance(parent, Attention_Average):
-                    current_error_length = len(error_msgs)
-                    module._load_from_state_dict(
-                        local_state_dict,
-                        prefix,
-                        local_metadata,
-                        True,
-                        missing_keys,
-                        unexpected_keys,
-                        error_msgs,
-                    )
-                    if len(error_msgs) > current_error_length:
-                        del error_msgs[current_error_length:]
-                        keys = list(local_state_dict.keys())
-                        weight_key = keys[0]
-                        weight = local_state_dict[weight_key]
-                        if len(keys) > 1:
-                            bias_key = keys[1]
-                            bias = local_state_dict[bias_key]
-                        else:
-                            bias = None
-
-                        if name == "qkv":
-                            # resize qkv
-                            weight = weight.reshape(
-                                3, parent.num_heads, -1, weight.shape[-1]
-                            )
-                            weight = weight.mean(dim=1)
-                            weight = weight.reshape(-1, weight.shape[-1])
-                            local_state_dict[weight_key] = weight
-                            if bias is not None:
-                                bias = bias.reshape(3, parent.num_heads, -1)
-                                bias = bias.mean(dim=1)
-                                bias = bias.reshape(-1)
-                                local_state_dict[bias_key] = bias
-                            module._load_from_state_dict(
-                                local_state_dict,
-                                prefix,
-                                local_metadata,
-                                True,
-                                missing_keys,
-                                unexpected_keys,
-                                error_msgs,
-                            )
-
-                        elif name == "proj":
-                            weight = weight.reshape(weight.shape[0], parent.num_heads, -1)
-                            weight = weight.mean(dim=1)
-                            weight = weight.reshape(weight.shape[0],-1)
-                            local_state_dict[weight_key] = weight
-
-                            # if bias is not None:
-                            #     bias = bias.reshape(parent.num_heads, -1)
-                            #     bias = bias.mean(dim=1)
-                            #     bias = bias.reshape(-1)
-                            #     local_state_dict[bias_key] = bias
-                            module._load_from_state_dict(
-                                local_state_dict,
-                                prefix,
-                                local_metadata,
-                                True,
-                                missing_keys,
-                                unexpected_keys,
-                                error_msgs,
-                            )
-            else:
-                module._load_from_state_dict(
-                    local_state_dict,
-                    prefix,
-                    local_metadata,
-                    True,
-                    missing_keys,
-                    unexpected_keys,
-                    error_msgs,
-                )
-            for name, child in module._modules.items():
-                if child is not None:
-                    child_prefix = prefix + name + "."
-                    child_state_dict = {
-                        k: v
-                        for k, v in local_state_dict.items()
-                        if k.startswith(child_prefix)
-                    }
-                    load(
-                        child, child_state_dict, child_prefix, name=name, parent=module
-                    )  # noqa: F821
-
-            # Note that the hook can modify missing_keys and unexpected_keys.
-            incompatible_keys = _IncompatibleKeys(missing_keys, unexpected_keys)
-            for hook in module._load_state_dict_post_hooks.values():
-                out = hook(module, incompatible_keys)
-                assert out is None, (
-                    "Hooks registered with ``register_load_state_dict_post_hook`` are not"
-                    "expected to return new values, if incompatible_keys need to be modified,"
-                    "it should be done inplace."
-                )
-
-        load(self, state_dict)
-        del load
-
-        if strict:
-            if len(unexpected_keys) > 0:
-                error_msgs.insert(
-                    0,
-                    "Unexpected key(s) in state_dict: {}. ".format(
-                        ", ".join(f'"{k}"' for k in unexpected_keys)
-                    ),
-                )
-            if len(missing_keys) > 0:
-                error_msgs.insert(
-                    0,
-                    "Missing key(s) in state_dict: {}. ".format(
-                        ", ".join(f'"{k}"' for k in missing_keys)
-                    ),
-                )
-
-        if len(error_msgs) > 0:
-            raise RuntimeError(
-                "Error(s) in loading state_dict for {}:\n\t{}".format(
-                    self.__class__.__name__, "\n\t".join(error_msgs)
-                )
-            )
-        return _IncompatibleKeys(missing_keys, unexpected_keys)
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = "") -> None:
@@ -3135,9 +2818,9 @@ def _create_vision_transformer(
     )
 
 
-def _create_vision_transformer_Average(
-    variant: str, pretrained: bool = False, **kwargs
-) -> VisionTransformer_Average:
+def _create_vision_transformer_Generic(
+    model_class, variant: str, pretrained: bool = False, **kwargs
+) -> VisionTransformer:
     out_indices = kwargs.pop("out_indices", 3)
     if "flexi" in variant:
         # FIXME Google FlexiViT pretrained models have a strong preference for bilinear patch / embed
@@ -3154,7 +2837,7 @@ def _create_vision_transformer_Average(
         strict = False
 
     return build_model_with_cfg(
-        VisionTransformer_Average,
+        model_class,
         variant,
         pretrained,
         pretrained_filter_fn=_filter_fn,
@@ -3355,18 +3038,6 @@ def vit_huge_patch14_224(pretrained: bool = False, **kwargs) -> VisionTransforme
     """ViT-Huge model (ViT-H/14) from original paper (https://arxiv.org/abs/2010.11929)."""
     model_args = dict(patch_size=14, embed_dim=1280, depth=32, num_heads=16)
     model = _create_vision_transformer(
-        "vit_huge_patch14_224", pretrained=pretrained, **dict(model_args, **kwargs)
-    )
-    return model
-
-
-@register_model
-def vit_huge_patch14_224_Average(
-    pretrained: bool = False, **kwargs
-) -> VisionTransformer:
-    """ViT-Huge model (ViT-H/14) from original paper (https://arxiv.org/abs/2010.11929)."""
-    model_args = dict(patch_size=14, embed_dim=1280, depth=32, num_heads=16)
-    model = _create_vision_transformer_Average(
         "vit_huge_patch14_224", pretrained=pretrained, **dict(model_args, **kwargs)
     )
     return model
@@ -5345,3 +5016,396 @@ register_model_deprecations(
         "vit_giant_patch14_224_clip_laion2b": "vit_giant_patch14_clip_224.laion2b",
     },
 )
+
+
+################################################################### Attention Average #############################################
+
+
+class Attention_Average(nn.Module):
+    fused_attn: Final[bool]
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        norm_layer: nn.Module = nn.LayerNorm,
+    ) -> None:
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim**-0.5
+        self.fused_attn = use_fused_attn()
+
+        self.qkv = nn.Linear(
+            dim, self.head_dim * 3, bias=qkv_bias
+        )  # replace dim with self.head_dim
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(self.head_dim, dim)  # replace dim with self.head_dim
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        qkv = (
+            self.qkv(x).reshape(B, N, 3, 1, self.head_dim).permute(2, 0, 3, 1, 4)
+        )  # replace num_heads with 1
+        q, k, v = qkv.unbind(0)
+        q, k = self.q_norm(q), self.k_norm(k)
+
+        if self.fused_attn:
+            x = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
+            )
+        else:
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(
+            B, N, self.head_dim
+        )  # replace C with self.head_dim
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class Block_Average(Block_Generic):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(attention_class=Attention_Average, **kwargs)
+
+
+class VisionTransformer_Average(VisionTransformer):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(block_fn=Block_Average, **kwargs)
+
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ):
+        r"""Copy parameters and buffers from :attr:`state_dict` into this module and its descendants.
+
+        If :attr:`strict` is ``True``, then
+        the keys of :attr:`state_dict` must exactly match the keys returned
+        by this module's :meth:`~torch.nn.Module.state_dict` function.
+
+        .. warning::
+            If :attr:`assign` is ``True`` the optimizer must be created after
+            the call to :attr:`load_state_dict` unless
+            :func:`~torch.__future__.get_swap_module_params_on_conversion` is ``True``.
+
+        Args:
+            state_dict (dict): a dict containing parameters and
+                persistent buffers.
+            strict (bool, optional): whether to strictly enforce that the keys
+                in :attr:`state_dict` match the keys returned by this module's
+                :meth:`~torch.nn.Module.state_dict` function. Default: ``True``
+            assign (bool, optional): When ``False``, the properties of the tensors
+                in the current module are preserved while when ``True``, the
+                properties of the Tensors in the state dict are preserved. The only
+                exception is the ``requires_grad`` field of :class:`~torch.nn.Parameter`s
+                for which the value from the module is preserved.
+                Default: ``False``
+
+        Returns:
+            ``NamedTuple`` with ``missing_keys`` and ``unexpected_keys`` fields:
+                * **missing_keys** is a list of str containing any keys that are expected
+                    by this module but missing from the provided ``state_dict``.
+                * **unexpected_keys** is a list of str containing the keys that are not
+                    expected by this module but present in the provided ``state_dict``.
+
+        Note:
+            If a parameter or buffer is registered as ``None`` and its corresponding key
+            exists in :attr:`state_dict`, :meth:`load_state_dict` will raise a
+            ``RuntimeError``.
+        """
+        if not isinstance(state_dict, Mapping):
+            raise TypeError(
+                f"Expected state_dict to be dict-like, got {type(state_dict)}."
+            )
+
+        missing_keys: List[str] = []
+        unexpected_keys: List[str] = []
+        error_msgs: List[str] = []
+
+        # copy state_dict so _load_from_state_dict can modify it
+        metadata = getattr(state_dict, "_metadata", None)
+        state_dict = OrderedDict(state_dict)
+        if metadata is not None:
+            # mypy isn't aware that "_metadata" exists in state_dict
+            state_dict._metadata = metadata  # type: ignore[attr-defined]
+
+        def load(module, local_state_dict, prefix="", name="", parent=None):
+            local_metadata = {} if metadata is None else metadata.get(prefix[:-1], {})
+            if assign:
+                local_metadata["assign_to_params_buffers"] = assign
+            if (
+                isinstance(module, nn.Linear)
+                and name in ["qkv", "proj"]
+                and parent is not None
+            ):
+                if isinstance(parent, Attention_Average):
+                    current_error_length = len(error_msgs)
+                    module._load_from_state_dict(
+                        local_state_dict,
+                        prefix,
+                        local_metadata,
+                        True,
+                        missing_keys,
+                        unexpected_keys,
+                        error_msgs,
+                    )
+                    if len(error_msgs) > current_error_length:
+                        del error_msgs[current_error_length:]
+                        keys = list(local_state_dict.keys())
+                        weight_key = keys[0]
+                        weight = local_state_dict[weight_key]
+                        if len(keys) > 1:
+                            bias_key = keys[1]
+                            bias = local_state_dict[bias_key]
+                        else:
+                            bias = None
+
+                        if name == "qkv":
+                            # resize qkv
+                            weight = weight.reshape(
+                                3, parent.num_heads, -1, weight.shape[-1]
+                            )
+                            weight = weight.mean(dim=1)
+                            weight = weight.reshape(-1, weight.shape[-1])
+                            local_state_dict[weight_key] = weight
+                            if bias is not None:
+                                bias = bias.reshape(3, parent.num_heads, -1)
+                                bias = bias.mean(dim=1)
+                                bias = bias.reshape(-1)
+                                local_state_dict[bias_key] = bias
+                            module._load_from_state_dict(
+                                local_state_dict,
+                                prefix,
+                                local_metadata,
+                                True,
+                                missing_keys,
+                                unexpected_keys,
+                                error_msgs,
+                            )
+
+                        elif name == "proj":
+                            weight = weight.reshape(
+                                weight.shape[0], parent.num_heads, -1
+                            )
+                            weight = weight.mean(dim=1)
+                            weight = weight.reshape(weight.shape[0], -1)
+                            local_state_dict[weight_key] = weight
+
+                            # if bias is not None:
+                            #     bias = bias.reshape(parent.num_heads, -1)
+                            #     bias = bias.mean(dim=1)
+                            #     bias = bias.reshape(-1)
+                            #     local_state_dict[bias_key] = bias
+                            module._load_from_state_dict(
+                                local_state_dict,
+                                prefix,
+                                local_metadata,
+                                True,
+                                missing_keys,
+                                unexpected_keys,
+                                error_msgs,
+                            )
+            else:
+                module._load_from_state_dict(
+                    local_state_dict,
+                    prefix,
+                    local_metadata,
+                    True,
+                    missing_keys,
+                    unexpected_keys,
+                    error_msgs,
+                )
+            for name, child in module._modules.items():
+                if child is not None:
+                    child_prefix = prefix + name + "."
+                    child_state_dict = {
+                        k: v
+                        for k, v in local_state_dict.items()
+                        if k.startswith(child_prefix)
+                    }
+                    load(
+                        child, child_state_dict, child_prefix, name=name, parent=module
+                    )  # noqa: F821
+
+            # Note that the hook can modify missing_keys and unexpected_keys.
+            incompatible_keys = _IncompatibleKeys(missing_keys, unexpected_keys)
+            for hook in module._load_state_dict_post_hooks.values():
+                out = hook(module, incompatible_keys)
+                assert out is None, (
+                    "Hooks registered with ``register_load_state_dict_post_hook`` are not"
+                    "expected to return new values, if incompatible_keys need to be modified,"
+                    "it should be done inplace."
+                )
+
+        load(self, state_dict)
+        del load
+
+        if strict:
+            if len(unexpected_keys) > 0:
+                error_msgs.insert(
+                    0,
+                    "Unexpected key(s) in state_dict: {}. ".format(
+                        ", ".join(f'"{k}"' for k in unexpected_keys)
+                    ),
+                )
+            if len(missing_keys) > 0:
+                error_msgs.insert(
+                    0,
+                    "Missing key(s) in state_dict: {}. ".format(
+                        ", ".join(f'"{k}"' for k in missing_keys)
+                    ),
+                )
+
+        if len(error_msgs) > 0:
+            raise RuntimeError(
+                "Error(s) in loading state_dict for {}:\n\t{}".format(
+                    self.__class__.__name__, "\n\t".join(error_msgs)
+                )
+            )
+        return _IncompatibleKeys(missing_keys, unexpected_keys)
+
+
+@register_model
+def vit_small_patch16_224_Average(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """ViT-Small (ViT-S/16)"""
+    model_args = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6)
+    model = _create_vision_transformer_Generic(
+        VisionTransformer_Average,
+        "vit_small_patch16_224",
+        pretrained=pretrained,
+        **dict(model_args, **kwargs),
+    )
+    return model
+
+
+@register_model
+def vit_base_patch16_224_Average(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
+    """
+    model_args = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12)
+    model = _create_vision_transformer_Generic(
+        VisionTransformer_Average,
+        "vit_base_patch16_224",
+        pretrained=pretrained,
+        **dict(model_args, **kwargs),
+    )
+    return model
+
+
+################################################################### Attention Meta #############################################
+
+
+class Attention_Meta(nn.Module):
+    fused_attn: Final[bool]
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        norm_layer: nn.Module = nn.LayerNorm,
+    ) -> None:
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim**-0.5
+        self.fused_attn = use_fused_attn()
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+        self.H_scan = None
+        self.V_scan = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        if self.H_scan is None:
+            atte_weight_dim = N * self.num_heads
+            self.H_scan = nn.Linear(atte_weight_dim, atte_weight_dim).to(x.device)
+            self.V_scan = nn.Linear(atte_weight_dim, atte_weight_dim).to(x.device)
+
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv.unbind(0)
+        q, k = self.q_norm(q), self.k_norm(k)
+
+        q = q * self.scale
+        attn = q @ k.transpose(-2, -1)  # (B, num_heads, Ni, Nj)
+        attn = attn.permute(0, 2, 1, 3).reshape(B, N, -1)  # (B, Ni, num_heads * Nj)
+        attn_v = (
+            self.V_scan(attn).reshape(B, N, self.num_heads, N).permute(0, 2, 1, 3)
+        )  # (B,  num_heads, Ni, Nj)
+        attn = (
+            attn.reshape(B, N, self.num_heads, N).permute(0, 3, 2, 1).reshape(B, N, -1)
+        )  # (B, Nj, num_heads * Ni)
+        attn_h = (
+            self.H_scan(attn).reshape(B, N, self.num_heads, N).permute(0, 2, 3, 1)
+        )  # (B,  num_heads, Ni, Nj)
+
+        attn = attn_h + attn_v # v1
+        # attn = attn_h + attn_v v1_1
+        # attn = attn_h + attn_v v1_2
+        # attn = attn_v @ attn_h #v2
+
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+        x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class Block_Meta(Block_Generic):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(attention_class=Attention_Meta, **kwargs)
+
+
+class VisionTransformer_Meta(VisionTransformer):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(block_fn=Block_Meta, **kwargs)
+
+
+@register_model
+def vit_small_patch16_224_Meta(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """ViT-Small (ViT-S/16)"""
+    model_args = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6)
+    model = _create_vision_transformer_Generic(
+        VisionTransformer_Meta,
+        "vit_small_patch16_224",
+        pretrained=pretrained,
+        **dict(model_args, **kwargs),
+    )
+    return model

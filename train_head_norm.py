@@ -81,7 +81,7 @@ group = parser.add_argument_group('Dataset parameters')
 # Keep this argument outside the dataset group because it is positional.
 parser.add_argument('data', nargs='?', metavar='DIR', const=None,
                     help='path to dataset (positional is *deprecated*, use --data-dir)')
-parser.add_argument('--data-dir', metavar='DIR', default="/export/datasets/public/3d/ILSVRC2012/images",
+parser.add_argument('--data-dir', metavar='DIR',
                     help='path to dataset (root dir)')
 parser.add_argument('--dataset', metavar='NAME', default='',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
@@ -108,7 +108,7 @@ group.add_argument('--dataset-trust-remote-code', action='store_true', default=F
 
 # Model parameters
 group = parser.add_argument_group('Model parameters')
-group.add_argument('--model', default='vit_small_patch16_224_Meta', type=str, metavar='MODEL',
+group.add_argument('--model', default='resnet50', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
 group.add_argument('--pretrained', action='store_true', default=False,
                    help='Start with pretrained version of specified network (if avail)')
@@ -139,7 +139,7 @@ group.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
                    help='Override std deviation of dataset')
 group.add_argument('--interpolation', default='', type=str, metavar='NAME',
                    help='Image resize interpolation type (overrides model)')
-group.add_argument('-b', '--batch-size', type=int, default=4, metavar='N',
+group.add_argument('-b', '--batch-size', type=int, default=128, metavar='N',
                    help='Input batch size for training (default: 128)')
 group.add_argument('-vb', '--validation-batch-size', type=int, default=None, metavar='N',
                    help='Validation batch size override (default: None)')
@@ -556,8 +556,24 @@ def main():
                 f'Learning rate ({args.lr}) calculated from base learning rate ({args.lr_base}) '
                 f'and effective global batch size ({global_batch_size}) with {args.lr_base_scale} scaling.')
 
+    # Freeze all layers
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # Unfreeze the classifier
+    for param in model.get_classifier().parameters():
+        param.requires_grad = True
+
+    # Unfreeze normalization layers
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm2d, nn.LayerNorm, nn.BatchNorm1d, nn.InstanceNorm2d)):
+            for param in module.parameters():
+                param.requires_grad = True
+
+    # Create an optimizer for trainable parameters
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
     optimizer = create_optimizer_v2(
-        model,
+        trainable_params,
         **optimizer_kwargs(cfg=args),
         **args.opt_kwargs,
     )

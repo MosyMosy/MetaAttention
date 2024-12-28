@@ -131,7 +131,7 @@ parser.add_argument(
     "--model",
     "-m",
     metavar="NAME",
-    default="vit_huge_patch14_224_Average",
+    default="vit_small_patch16_224_Meta",
     help="model architecture (default: dpn92)",
 )
 parser.add_argument(
